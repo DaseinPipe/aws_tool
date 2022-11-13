@@ -1,10 +1,11 @@
 import sys
-import ast
-import subprocess
 from PySide2.QtWidgets import QMainWindow, QApplication, QHeaderView, QTableWidgetItem, QMessageBox
+import time
 from PySide2.QtCore import Qt
+from contextlib import contextmanager
 from aws_tool.src.resource import resource_main, message_box
 from aws_tool.src.config.config_main import *
+import boto3
 
 
 def cell_editable(item, status=False):
@@ -16,6 +17,15 @@ def cell_editable(item, status=False):
     item.setFlags(flags)
 
 
+@contextmanager
+def wait_cursor():
+    try:
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        yield
+    finally:
+        QApplication.restoreOverrideCursor()
+
+
 class AwsMain(resource_main.Ui_MainWindow, QMainWindow):
 
     def __init__(self, ):
@@ -24,6 +34,8 @@ class AwsMain(resource_main.Ui_MainWindow, QMainWindow):
         self.main_tableWidget.horizontalHeader().setStretchLastSection(True)
         self.main_tableWidget.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.instance_column_name = 'Instance'
+        self.ec2_client = boto3.client('ec2', region_name='ap-south-1')
+        self.instance_response = self.ec2_client.describe_instances()
         self._instance_status = UNKNOWN
         self.populate()
         self.connection()
@@ -41,10 +53,8 @@ class AwsMain(resource_main.Ui_MainWindow, QMainWindow):
         self.start_pushButton.clicked.connect(self.start_instance)
         self.stop_pushButton.clicked.connect(self.stop_instance)
 
-
     def refresh(self):
         self.populate()
-
 
     def get_instance(self):
         main_tableWidget = self.main_tableWidget
@@ -66,50 +76,33 @@ class AwsMain(resource_main.Ui_MainWindow, QMainWindow):
         instance = self.get_instance()
         if not instance:
             return
-        instance_start_cmd = f'''
-            aws ec2 start-instances \
-            --region ap-south-1 \
-            --instance-ids {instance}
-        '''
-        subprocess.call([instance_start_cmd], shell=True)
-        result = subprocess.check_output(
-            [instance_start_cmd],
-            shell=True
-        ).decode('UTF-8').replace('null', 'None')
-        self.refresh()
+        self.ec2_client.start_instances(InstanceIds=[instance])
+        with wait_cursor():
+            time.sleep(30)
+            self.refresh()
         message_box.pop_up(
             messType='info',
             messTitle='Instance Started.',
-            messText=result,
+            messText=f"Successfully started instances: {instance} ",
             buttons=QMessageBox.Cancel,
             defaultButton=QMessageBox.Cancel
         )
-
-
 
     def stop_instance(self):
         instance = self.get_instance()
         if not instance:
             return
-        instance_stop_cmd = f'''
-            aws ec2 stop-instances \
-            --region ap-south-1 \
-            --instance-ids {instance}
-        '''
-        result = subprocess.check_output(
-            [instance_stop_cmd],
-            shell=True
-        ).decode('UTF-8').replace('null', 'None')
-        result = ast.literal_eval(result)
-        self.refresh()
+        self.ec2_client.stop_instances(InstanceIds=[instance])
+        with wait_cursor():
+            time.sleep(20)
+            self.refresh()
         message_box.pop_up(
             messType='info',
             messTitle='Instance Stopped.',
-            messText=str(result),
+            messText=f"Successfully stopped instances: {instance} ",
             buttons=QMessageBox.Cancel,
             defaultButton=QMessageBox.Cancel
         )
-
 
     def insert_row(self, current_row, current_column, value):
         source_item = QTableWidgetItem(value)
@@ -137,32 +130,26 @@ class AwsMain(resource_main.Ui_MainWindow, QMainWindow):
 
     @instance_status.setter
     def instance_status(self, instance):
-        instance_status_query_cmd = f'''
-            aws ec2 describe-instance-status \
-            --region ap-south-1 \
-            --instance-id {instance}
-
-        '''
-        result = subprocess.check_output([instance_status_query_cmd], shell=True).decode('UTF-8').replace('null',
-                                                                                                          'None')
-        result = ast.literal_eval(result)
-        if not result.get('InstanceStatuses'):
+        status_response = self.ec2_client.describe_instance_status(InstanceIds=[instance])
+        if not status_response.get('InstanceStatuses'):
             self._instance_status = 'stopped'
         else:
-            status = result.get('InstanceStatuses')[0].get('InstanceState', {}).get('Name', UNKNOWN)
+            status = status_response['InstanceStatuses'][0]['InstanceState']['Name']
             self._instance_status = status
 
     @property
     def aws_instances_list(self):
-        instances_query_cmd = '''
-           aws ec2 describe-instances \
-           --region ap-south-1 \
-           --filters Name=tag-key,Values=Name,ip-address \
-           --query 'Reservations[*].Instances[*].{Instance:InstanceId,PublicIpAddress:PublicIpAddress,Name:Tags[?Key==`Name`]|[0].Value}' \
-           --output json
-        '''
-        result = subprocess.check_output([instances_query_cmd], shell=True).decode('UTF-8').replace('null', 'None')
-        return [each[0] for each in ast.literal_eval(result)]
+        instance_list = []
+        for r in self.instance_response['Reservations']:
+            for instance in r['Instances']:
+                instance_list.append(
+                    {
+                        'Name': instance['Tags'][0]['Value'],
+                        'PublicIpAddress': instance.get('PublicIpAddress', ''),
+                        'Instance': instance['InstanceId'],
+                    }
+                )
+        return instance_list
 
 
 def run():
