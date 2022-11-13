@@ -1,8 +1,8 @@
 import sys
-import ast
-import subprocess
 from PySide2.QtWidgets import QMainWindow, QApplication, QHeaderView, QTableWidgetItem, QMessageBox
+import time
 from PySide2.QtCore import Qt
+from contextlib import contextmanager
 from aws_tool.src.resource import resource_main, message_box
 from aws_tool.src.config.config_main import *
 import boto3
@@ -15,6 +15,15 @@ def cell_editable(item, status=False):
     else:
         flags &= ~Qt.ItemIsEditable
     item.setFlags(flags)
+
+
+@contextmanager
+def wait_cursor():
+    try:
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        yield
+    finally:
+        QApplication.restoreOverrideCursor()
 
 
 class AwsMain(resource_main.Ui_MainWindow, QMainWindow):
@@ -68,7 +77,9 @@ class AwsMain(resource_main.Ui_MainWindow, QMainWindow):
         if not instance:
             return
         self.ec2_client.start_instances(InstanceIds=[instance])
-        self.refresh()
+        with wait_cursor():
+            time.sleep(30)
+            self.refresh()
         message_box.pop_up(
             messType='info',
             messTitle='Instance Started.',
@@ -82,7 +93,9 @@ class AwsMain(resource_main.Ui_MainWindow, QMainWindow):
         if not instance:
             return
         self.ec2_client.stop_instances(InstanceIds=[instance])
-        self.refresh()
+        with wait_cursor():
+            time.sleep(20)
+            self.refresh()
         message_box.pop_up(
             messType='info',
             messTitle='Instance Stopped.',
